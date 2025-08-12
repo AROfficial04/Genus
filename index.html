@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SLA & Loss Monitoring Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./assets/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Header Section -->
+      <header class="app-header">
+        <div class="brand">
+          <div class="logo">⚡</div>
+          <div class="title">SLA & Loss Monitoring Dashboard</div>
+        </div>
+        <div class="header-actions">
+          <input id="globalSearch" class="search" type="search" placeholder="Search Feeder, DT, or Meter..." />
+        </div>
+      </header>
+
+      <!-- Fixed info bar -->
+      <section class="infobar" id="infobar">
+        <div><strong>File:</strong> <span id="fileName">—</span></div>
+        <div><strong>Data Date:</strong> <span id="dataDate">Today</span></div>
+        <div><strong>Processed:</strong> <span id="processedTime">—</span></div>
+      </section>
+
+      <!-- KPI Tiles (no overall loss metrics) -->
+      <section class="kpi-grid" id="kpiGrid">
+        <!-- Tiles injected by JS -->
+      </section>
+
+      <!-- Main Content: Left Nav Tree + Right Details -->
+      <main class="main-layout">
+        <aside class="nav-panel">
+          <div class="panel-header">
+            <div class="panel-title">Explorer</div>
+            <div class="panel-tools">
+              <select id="regionFilter">
+                <option value="__ALL__">All Regions</option>
+              </select>
+            </div>
+          </div>
+          <div id="tree" class="tree"></div>
+        </aside>
+
+        <section class="content-panel">
+          <!-- Region-wise Summary Table -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Region-wise Summary</div>
+              <div class="header-filters">
+                <label>
+                  Loss %
+                  <select id="lossRange">
+                    <option value="__ANY__">Any</option>
+                    <option value="GREEN">Green</option>
+                    <option value="AMBER">Amber</option>
+                    <option value="RED">Red</option>
+                  </select>
+                </label>
+                <label>
+                  SLA %
+                  <select id="slaRange">
+                    <option value="__ANY__">Any</option>
+                    <option value="GREEN">Green</option>
+                    <option value="AMBER">Amber</option>
+                    <option value="RED">Red</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table id="regionTable" class="table">
+                <thead>
+                  <tr>
+                    <th data-key="region">Region</th>
+                    <th data-key="feeders">Feeders</th>
+                    <th data-key="dts">DTs</th>
+                    <th data-key="meters">Meters</th>
+                    <th data-key="lossFdt">F→DT Loss%</th>
+                    <th data-key="lossDtc">DT→Cons Loss%</th>
+                    <th data-key="lossFc">F→Cons Loss%</th>
+                    <th data-key="slaDaily">SLA Daily Energy%</th>
+                    <th data-key="slaLoad">SLA Load Data%</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Hierarchical Loss Table (Accordion) -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Feeder → DT → Consumer Losses</div>
+              <div class="header-filters">
+                <label>
+                  Region
+                  <select id="accordionRegionFilter">
+                    <option value="__ALL__">All Regions</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table id="accordionTable" class="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Code</th>
+                    <th>Energy (kWh)</th>
+                    <th>F→DT Loss %</th>
+                    <th>F→Cons / DT→Cons Loss %</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Detail View -->
+          <div class="card" id="detailCard">
+            <div class="card-header">
+              <div class="card-title" id="detailTitle">Details</div>
+            </div>
+            <div id="detailMetrics" class="detail-metrics"></div>
+            <div id="detailBody"></div>
+          </div>
+
+          
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>No database. All metrics are computed in-memory from the uploaded Excel.</span>
+      </footer>
+    </div>
+
+    <script type="module" src="./assets/app.js"></script>
+  </body>
+  </html>
+
+
