@@ -672,6 +672,8 @@ function renderAccordionTable() {
 
   // Build rows with data attributes for expand/collapse
   const rows = [];
+  // Store rows globally for event listener access
+  window.accordionRows = rows;
   for (const region of regions) {
     for (const feeder of region.feeders) {
       const feederEnergy = feeder.metrics.feederEnergy ?? 0;
@@ -718,14 +720,19 @@ function renderAccordionTable() {
   tbody.innerHTML = rows.filter(r => r.type === 'feeder').map(r => rowHtml(r, 0, true)).join('');
 
   // Use event delegation to handle all row clicks
-  tbody.addEventListener('click', (e) => {
+  // Remove any existing event listeners by cloning the tbody
+  const newTbody = tbody.cloneNode(true);
+  tbody.parentNode.replaceChild(newTbody, tbody);
+  
+  // Add the event listener to the new tbody
+  newTbody.addEventListener('click', (e) => {
     const tr = e.target.closest('tr.row-toggle');
     if (!tr) return;
     
     const type = tr.getAttribute('data-type');
     if (type === 'feeder' || type === 'dt') {
       e.stopPropagation();
-      toggleExpand(tr, rows);
+      toggleExpand(tr, window.accordionRows);
     }
   });
 }
@@ -776,12 +783,7 @@ function toggleExpand(tr, rows) {
     // collapse: remove all descendant rows
     const toRemove = [];
     let sibling = tr.nextElementSibling;
-    while (sibling && sibling.getAttribute('data-parent') !== null) {
-      const sid = sibling.getAttribute('data-id');
-      const sparent = sibling.getAttribute('data-parent');
-      // remove until we reach another feeder (no parent or parent is region)
-      if (type === 'feeder' && sibling.getAttribute('data-type') === 'feeder') break;
-      if (type === 'dt' && sibling.getAttribute('data-type') !== 'meter') break;
+    while (sibling && sibling.getAttribute('data-parent') === id) {
       toRemove.push(sibling);
       sibling = sibling.nextElementSibling;
     }
