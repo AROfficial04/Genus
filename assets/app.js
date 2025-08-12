@@ -101,6 +101,11 @@ function buildModelFromThreeSheets(feedersSheet, dtsSheet, metersSheet) {
     const comm       = parseYesNo(f["Comm"]);
     const nonComm    = parseYesNo(f["NonComm"]);
 
+    // track SLA global for feeders
+    state.slaGlobal.totalRows += 1;
+    if (comm) state.slaGlobal.commYes += 1;
+    if (nonComm) state.slaGlobal.nonCommYes += 1;
+
     // region setup
     let region = state.lookups.regionByName.get(regionName);
     if (!region) {
@@ -134,6 +139,13 @@ function buildModelFromThreeSheets(feedersSheet, dtsSheet, metersSheet) {
     const nonComm    = parseYesNo(d["NonComm"]);
     const unmapped   = parseYesNo(d["Unmapped"]);
     const neverComm  = parseYesNo(d["NeverComm"]);
+
+    // track SLA global for DTs
+    state.slaGlobal.totalRows += 1;
+    if (comm) state.slaGlobal.commYes += 1;
+    if (nonComm) state.slaGlobal.nonCommYes += 1;
+    if (unmapped) state.slaGlobal.unmappedYes += 1;
+    if (neverComm) state.slaGlobal.neverCommYes += 1;
 
     const dtEnergy = diffEnergy(dtDay1, dtDay2, mf);
     const dtObj = {
@@ -187,14 +199,15 @@ function buildModelFromThreeSheets(feedersSheet, dtsSheet, metersSheet) {
     region.metrics.dts = region.feeders.reduce((a,f) => a+f.dts.length, 0);
     region.metrics.meters = region.feeders.reduce((a,f) => a+f.meters.length, 0);
 
+    // Calculate communication metrics from all asset types (feeders, DTs, meters)
     region.metrics.communicating = region.feeders
-      .reduce((acc, f) => acc + f.meters.filter(m => m.comm).length, 0);
+      .reduce((acc, f) => acc + (f.metrics.comm ? 1 : 0) + f.dts.reduce((dtAcc, dt) => dtAcc + (dt.metrics.comm ? 1 : 0), 0) + f.meters.filter(m => m.comm).length, 0);
     region.metrics.nonCommunicating = region.feeders
-      .reduce((acc, f) => acc + f.meters.filter(m => m.nonComm).length, 0);
+      .reduce((acc, f) => acc + (f.metrics.nonComm ? 1 : 0) + f.dts.reduce((dtAcc, dt) => dtAcc + (dt.metrics.nonComm ? 1 : 0), 0) + f.meters.filter(m => m.nonComm).length, 0);
     region.metrics.unmapped = region.feeders
-      .reduce((acc, f) => acc + f.meters.filter(m => m.unmapped).length, 0);
+      .reduce((acc, f) => acc + f.dts.reduce((dtAcc, dt) => dtAcc + (dt.metrics.unmapped ? 1 : 0), 0) + f.meters.filter(m => m.unmapped).length, 0);
     region.metrics.neverComm = region.feeders
-      .reduce((acc, f) => acc + f.meters.filter(m => m.neverComm).length, 0);
+      .reduce((acc, f) => acc + f.dts.reduce((dtAcc, dt) => dtAcc + (dt.metrics.neverComm ? 1 : 0), 0) + f.meters.filter(m => m.neverComm).length, 0);
   }
 
 }
