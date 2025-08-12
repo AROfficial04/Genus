@@ -778,6 +778,14 @@ function renderAccordionTable() {
   tbody.querySelectorAll('[data-type="feeder"]').forEach((tr) => {
     tr.addEventListener('click', () => toggleExpand(tr, rows));
   });
+  
+  // Also attach handlers for any DT rows that might be visible initially
+  tbody.querySelectorAll('[data-type="dt"]').forEach((tr) => {
+    tr.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpand(tr, rows);
+    });
+  });
 }
 
 function rowHtml(r, level, collapsible) {
@@ -860,6 +868,16 @@ function toggleExpand(tr, rows) {
           e.stopPropagation();
           toggleExpand(sibling, rows);
         });
+      }
+      sibling = sibling.nextElementSibling;
+    }
+  } else if (type === 'dt') {
+    // For DT rows, attach handlers to meter rows that get expanded
+    let sibling = tr.nextElementSibling;
+    while (sibling && sibling.getAttribute('data-parent') === id) {
+      if (sibling.getAttribute('data-type') === 'meter') {
+        // Meter rows don't need click handlers since they don't expand
+        sibling.style.cursor = 'default';
       }
       sibling = sibling.nextElementSibling;
     }
