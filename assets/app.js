@@ -7,7 +7,7 @@
 
 // Threshold helpers
 const LOSS_THRESHOLDS = { greenMax: 2, amberMax: 5 }; // percent
-const SLA_THRESHOLDS = { greenMin: 95, amberMin: 85 }; // percent
+// percent
 
 function classifyLoss(pct) {
   if (pct == null || isNaN(pct)) return { cls: "", label: "—" };
@@ -15,12 +15,7 @@ function classifyLoss(pct) {
   if (pct <= LOSS_THRESHOLDS.amberMax) return { cls: "badge-amber", label: "Amber" };
   return { cls: "badge-red", label: "Red" };
 }
-function classifySla(pct) {
-  if (pct == null || isNaN(pct)) return { cls: "", label: "—" };
-  if (pct >= SLA_THRESHOLDS.greenMin) return { cls: "badge-green", label: "Green" };
-  if (pct >= SLA_THRESHOLDS.amberMin) return { cls: "badge-amber", label: "Amber" };
-  return { cls: "badge-red", label: "Red" };
-}
+
 
 // State
 const state = {
@@ -45,16 +40,14 @@ const state = {
 document.addEventListener("DOMContentLoaded", () => {
   const globalSearch = document.getElementById("globalSearch");
   const regionFilter = document.getElementById("regionFilter");
-  const lossRange = document.getElementById("lossRange");
-  const slaRange = document.getElementById("slaRange");
+  
   const accordionRegionFilter = document.getElementById("accordionRegionFilter");
 
   globalSearch.addEventListener("keydown", (e) => {
     if (e.key === "Enter") onGlobalSearch(e.target.value.trim());
   });
   regionFilter.addEventListener("change", renderAll);
-  lossRange.addEventListener("change", renderAll);
-  slaRange.addEventListener("change", renderAll);
+  
   accordionRegionFilter.addEventListener("change", renderAccordionTable);
 
   // Auto-load workbook from hardcoded path, fallback to mock
@@ -62,7 +55,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function autoLoadWorkbook() {
-  const path = "sample_feeder_dt_meter_data.xlsx";
+  const path = "sample_3sheets_clean.xlsx";
   try {
     const resp = await fetch(path);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -79,208 +72,133 @@ async function autoLoadWorkbook() {
 }
 
 function parseWorkbook(workbook) {
-  // This parser expects certain sheets. For now, support a generic sheet named "Data"
-  // with columns: Region, FeederId, FeederName, DTId, DTName, MeterId, Day1, Day2, FeederEnergy, DTEnergy
-  const sheetName = workbook.SheetNames.find((n) => n.toLowerCase().includes("data")) || workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+  const feeders = XLSX.utils.sheet_to_json(workbook.Sheets["Feeders"], { defval: null });
+  const dts     = XLSX.utils.sheet_to_json(workbook.Sheets["DTs"], { defval: null });
+  const meters  = XLSX.utils.sheet_to_json(workbook.Sheets["Meters"], { defval: null });
 
-  buildModelFromRows(rows);
+  buildModelFromThreeSheets(feeders, dts, meters);
   renderAll();
 }
 
-function buildModelFromRows(rows) {
+
+function buildModelFromThreeSheets(feedersSheet, dtsSheet, metersSheet) {
   // Reset state
   state.regions = [];
   state.lookups.regionByName.clear();
   state.lookups.feederById.clear();
   state.lookups.dtById.clear();
   state.lookups.meterById.clear();
-  state.slaGlobal = { totalRows: 0, dailyYes: 0, loadYes: 0 };
+  state.slaGlobal = { totalRows: 0, commYes: 0, nonCommYes: 0, unmappedYes: 0, neverCommYes: 0 };
 
-  // Column helper getters tolerant to naming differences
-  const getVal = (row, candidates) => {
-    const keys = Object.keys(row);
-    for (const cand of candidates) {
-      const c = cand.toLowerCase();
-      const key = keys.find((k) => k && k.toLowerCase() === c) || keys.find((k) => k && k.toLowerCase().includes(c));
-      if (key) return row[key];
-    }
-    return undefined;
-  };
-  const getStr = (row, cands, fallback = undefined) => {
-    const v = getVal(row, cands);
-    return v == null ? fallback : String(v).trim();
-  };
-  const getNum = (row, cands, fallback = null) => {
-    const v = getVal(row, cands);
-    const n = Number(v);
-    return isFinite(n) ? n : fallback;
-  };
+  // --- Feeders ---
+  for (const f of feedersSheet) {
+    const regionName = f["Region Name"];
+    const feederId   = f["Feeder Code"];
+    const feederName = f["Feeder Name"];
+    const fDay1      = Number(f["Feeder Day1 reading"]);
+    const fDay2      = Number(f["Feeder Day2 reading"]);
+    const mf         = Number(f["MF Feeder"]) || 1;
+    const comm       = parseYesNo(f["Comm"]);
+    const nonComm    = parseYesNo(f["NonComm"]);
 
-  // Group hierarchy
-  for (const r of rows) {
-    const regionName = getStr(r, ["Region Name", "Region", "RegionName"], "Unknown");
-
-    const feederId = getStr(r, ["Feeder Code", "FeederId", "Feeder Code.", "Feeder Code ", "Feeder"], "F-?");
-    const feederName = getStr(r, ["Feeder Name", "Feeder"], feederId);
-    const feederDay1 = getNum(r, ["Feeder Day1 reading", "Feeder Day1 Read", "Feeder Day1"], null);
-    const feederDay2 = getNum(r, ["Feeder Day2 reading", "Feeder Day2 Read", "Feeder Day2"], null);
-    const feederMf = getNum(r, ["MF Feeder", "Feeder MF", "MF Feed"], 1);
-
-    const dtId = getStr(r, ["DT Code", "DTId", "DT Code "], "DT-?");
-    const dtName = getStr(r, ["DT Name", "DT"], dtId);
-    const dtDay1 = getNum(r, ["DT Day1 Reading", "DT Day1", "DT Day1 Read"], null);
-    const dtDay2 = getNum(r, ["DT Day2 Reading", "DT Day2", "DT Day2 Read"], null);
-    const dtMf = getNum(r, ["MF DT", "DT MF", "MF"], 1);
-
-    const meterId = getStr(r, ["Meter No", "Meter No.", "Meter Number", "Meter N", "Meter"], "M-?");
-    const meterDay1 = getNum(r, ["Meter Day1 Reading", "Meter Day1", "Day1", "Reading Day1"], null);
-    const meterDay2 = getNum(r, ["Meter Day2 Reading", "Meter Day2", "Day2", "Reading Day2"], null);
-    const dailyEnergyFlagRaw = getVal(r, ["Daily energy", "Daily Energy", "Daily_energy"]);
-    const loadDataRaw = getVal(r, ["Load Data", "LoadData", "Load_Data"]);
-    const dailyEnergyYes = parseYesNo(dailyEnergyFlagRaw);
-    const loadDataYes = parseYesNo(loadDataRaw);
-
-    const feederEnergy = diffEnergy(feederDay1, feederDay2, feederMf);
-    const dtEnergy = diffEnergy(dtDay1, dtDay2, dtMf);
-
-    // SLA counters (overall + per region) work at raw-row granularity
-    state.slaGlobal.totalRows += 1;
-    if (dailyEnergyYes) state.slaGlobal.dailyYes += 1;
-    if (loadDataYes) state.slaGlobal.loadYes += 1;
-
-    // Region
+    // region setup
     let region = state.lookups.regionByName.get(regionName);
     if (!region) {
-      region = { name: regionName, feeders: [], metrics: {}, _sla: { totalRows: 0, dailyYes: 0, loadYes: 0 } };
+      region = { name: regionName, feeders: [], metrics: {} };
       state.lookups.regionByName.set(regionName, region);
       state.regions.push(region);
     }
 
-    // Increment per-region SLA counters
-    region._sla.totalRows += 1;
-    if (dailyEnergyYes) region._sla.dailyYes += 1;
-    if (loadDataYes) region._sla.loadYes += 1;
-
-    // Feeder
-    let feeder = state.lookups.feederById.get(feederId);
-    if (!feeder) {
-      feeder = { id: feederId, name: feederName, dts: [], meters: [], metrics: {}, region: regionName };
-      state.lookups.feederById.set(feederId, feeder);
-      region.feeders.push(feeder);
-    }
-
-    // DT
-    let dt = state.lookups.dtById.get(dtId);
-    if (!dt) {
-      dt = { id: dtId, name: dtName, meters: [], metrics: {}, feederId };
-      state.lookups.dtById.set(dtId, dt);
-      feeder.dts.push(dt);
-    }
-
-    // Meter
-    let meter = state.lookups.meterById.get(meterId);
-    if (!meter) {
-      const energy = diffEnergy(meterDay1, meterDay2, 1);
-      const slaDaily = dailyEnergyYes; // as per spec, use explicit Yes/No
-      const slaLoad = loadDataYes;
-      meter = { id: meterId, readings: { day1: meterDay1, day2: meterDay2 }, energy, sla: { daily: slaDaily, load: slaLoad }, dtId, feederId };
-      state.lookups.meterById.set(meterId, meter);
-      dt.meters.push(meter);
-      feeder.meters.push(meter);
-    }
-
-    // Set energy metrics based on feeder/DT readings only once per asset
-    // First occurrence rule: set energy only once per feeder/dt
-    if (feeder.metrics._feEnergySet !== true && typeof feederEnergy === "number") {
-      feeder.metrics.feederEnergy = feederEnergy;
-      feeder.metrics._feEnergySet = true;
-    }
-    if (dt.metrics._dtEnergySet !== true && typeof dtEnergy === "number") {
-      dt.metrics.dtEnergy = dtEnergy;
-      dt.metrics._dtEnergySet = true;
-    }
-  }
-
-  // Aggregate counts and KPIs
-  for (const region of state.regions) {
-    const allDts = region.feeders.flatMap((f) => f.dts);
-    const allMeters = region.feeders.flatMap((f) => f.meters);
-
-    const totals = {
-      feeders: region.feeders.length,
-      dts: allDts.length,
-      meters: allMeters.length,
+    const feederEnergy = diffEnergy(fDay1, fDay2, mf);
+    const feederObj = {
+      id: feederId, name: feederName,
+      dts: [], meters: [],
+      metrics: { feederEnergy, comm, nonComm },
+      region: regionName
     };
 
-    // Compute energies
-    const feederEnergy = sum(region.feeders.map((f) => f.metrics.feederEnergy ?? sumDTEnergy(f)));
-    const dtEnergy = sum(allDts.map((d) => d.metrics.dtEnergy ?? sumMeterEnergy(d)));
-    const consumerEnergy = sum(allMeters.map((m) => m.energy ?? 0));
+    state.lookups.feederById.set(feederId, feederObj);
+    region.feeders.push(feederObj);
+  }
 
-    // Losses
-    const lossFdt = pctLoss(feederEnergy, dtEnergy);
-    const lossDtc = pctLoss(dtEnergy, consumerEnergy);
-    const lossFc = pctLoss(feederEnergy, consumerEnergy);
+  // --- DTs ---
+  for (const d of dtsSheet) {
+    const regionName = d["Region Name"];
+    const feederId   = d["Feeder Code"];
+    const dtId       = d["DT Code"];
+    const dtName     = d["DT Name"];
+    const dtDay1     = Number(d["DT Day1 Reading"]);
+    const dtDay2     = Number(d["DT Day2 Reading"]);
+    const mf         = Number(d["MF DT"]) || 1;
+    const comm       = parseYesNo(d["Comm"]);
+    const nonComm    = parseYesNo(d["NonComm"]);
+    const unmapped   = parseYesNo(d["Unmapped"]);
+    const neverComm  = parseYesNo(d["NeverComm"]);
 
-    // SLA per spec: percentages over raw rows for the region
-    const slaDailyPct = pct(region._sla.dailyYes, region._sla.totalRows);
-    const slaLoadPct = pct(region._sla.loadYes, region._sla.totalRows);
+    const dtEnergy = diffEnergy(dtDay1, dtDay2, mf);
+    const dtObj = {
+      id: dtId, name: dtName, meters: [],
+      metrics: { dtEnergy, comm, nonComm, unmapped, neverComm },
+      feederId
+    };
 
-    region.metrics = { ...totals, feederEnergy, dtEnergy, consumerEnergy, lossFdt, lossDtc, lossFc, slaDailyPct, slaLoadPct };
+    state.lookups.dtById.set(dtId, dtObj);
+    const feederObj = state.lookups.feederById.get(feederId);
+    if (feederObj) feederObj.dts.push(dtObj);
+  }
 
-    // For feeder/dt also compute summaries
-    for (const feeder of region.feeders) {
-      const dts = feeder.dts;
-      const meters = feeder.meters;
-      const fFeederEnergy = feeder.metrics.feederEnergy ?? sumDTEnergy(feeder);
-      const fDtEnergy = sum(dts.map((d) => d.metrics.dtEnergy ?? sumMeterEnergy(d)));
-      const fConsumerEnergy = sum(meters.map((m) => m.energy ?? 0));
-      const fLossFdt = pctLoss(fFeederEnergy, fDtEnergy);
-      const fLossDtc = pctLoss(fDtEnergy, fConsumerEnergy);
-      const fLossFc = pctLoss(fFeederEnergy, fConsumerEnergy);
-      // For feeder/DT-level we keep SLA based on meters presence for UI detail; region/overall use raw rows
-      const fSlaDaily = pct(meters.filter((m) => m.sla.daily).length, meters.length);
-      const fSlaLoad = pct(meters.filter((m) => m.sla.load).length, meters.length);
-      feeder.metrics = {
-        ...feeder.metrics,
-        feeders: 1,
-        dts: dts.length,
-        meters: meters.length,
-        feederEnergy: fFeederEnergy,
-        dtEnergy: fDtEnergy,
-        consumerEnergy: fConsumerEnergy,
-        lossFdt: fLossFdt,
-        lossDtc: fLossDtc,
-        lossFc: fLossFc,
-        slaDailyPct: fSlaDaily,
-        slaLoadPct: fSlaLoad,
-      };
-    }
+  // --- Meters ---
+  for (const m of metersSheet) {
+    const meterId  = m["Meter No."];
+    const feederId = m["Feeder Code"];
+    const dtId     = m["DT Code"];
+    const mDay1    = Number(m["Meter Day1 Reading"]);
+    const mDay2    = Number(m["Meter Day2 Reading"]);
+    const comm     = parseYesNo(m["Comm"]);
+    const nonComm  = parseYesNo(m["NonComm"]);
+    const unmapped = parseYesNo(m["Unmapped"]);
+    const neverComm= parseYesNo(m["NeverComm"]);
 
-    for (const dt of allDts) {
-      const meters = dt.meters;
-      const dtEnergyVal = dt.metrics.dtEnergy ?? sumMeterEnergy(dt);
-      const consumerEnergyVal = sum(meters.map((m) => m.energy ?? 0));
-      const lossDtcVal = pctLoss(dtEnergyVal, consumerEnergyVal);
-      const slaDailyVal = pct(meters.filter((m) => m.sla.daily).length, meters.length);
-      const slaLoadVal = pct(meters.filter((m) => m.sla.load).length, meters.length);
-      dt.metrics = {
-        ...dt.metrics,
-        meters: meters.length,
-        dtEnergy: dtEnergyVal,
-        consumerEnergy: consumerEnergyVal,
-        lossDtc: lossDtcVal,
-        slaDailyPct: slaDailyVal,
-        slaLoadPct: slaLoadVal,
-      };
+    const energy   = diffEnergy(mDay1, mDay2, 1);
+
+    // track SLA global
+    state.slaGlobal.totalRows += 1;
+    if (comm) state.slaGlobal.commYes += 1;
+    if (nonComm) state.slaGlobal.nonCommYes += 1;
+    if (unmapped) state.slaGlobal.unmappedYes += 1;
+    if (neverComm) state.slaGlobal.neverCommYes += 1;
+
+    const meterObj = { id: meterId, readings: { day1: mDay1, day2: mDay2 }, energy, comm, nonComm, unmapped, neverComm, dtId, feederId };
+    state.lookups.meterById.set(meterId, meterObj);
+
+    // If not unmapped, link into hierarchy
+    if (!unmapped) {
+      const dtObj = state.lookups.dtById.get(dtId);
+      if (dtObj) dtObj.meters.push(meterObj);
+      const feederObj = state.lookups.feederById.get(feederId);
+      if (feederObj) feederObj.meters.push(meterObj);
     }
   }
 
-  // Build results table rows per the specification
-  buildResultsTable();
+  // Aggregate metrics per region
+  // Aggregate metrics per region
+  for (const region of state.regions) {
+    region.metrics.feeders = region.feeders.length;
+    region.metrics.dts = region.feeders.reduce((a,f) => a+f.dts.length, 0);
+    region.metrics.meters = region.feeders.reduce((a,f) => a+f.meters.length, 0);
+
+    region.metrics.communicating = region.feeders
+      .reduce((acc, f) => acc + f.meters.filter(m => m.comm).length, 0);
+    region.metrics.nonCommunicating = region.feeders
+      .reduce((acc, f) => acc + f.meters.filter(m => m.nonComm).length, 0);
+    region.metrics.unmapped = region.feeders
+      .reduce((acc, f) => acc + f.meters.filter(m => m.unmapped).length, 0);
+    region.metrics.neverComm = region.feeders
+      .reduce((acc, f) => acc + f.meters.filter(m => m.neverComm).length, 0);
+  }
+
 }
+
 
 function renderAll() {
   renderKpis();
@@ -298,9 +216,12 @@ function renderKpis() {
   const tiles = [
     { label: "Total Feeders", value: totals.feeders, hint: "Total feeders", badge: "Static" },
     { label: "Total DTs", value: totals.dts, hint: "Total DTs", badge: "Static" },
-    { label: "Total Consumer Meters", value: totals.meters, hint: "Total meters", badge: "Static" },
-    { label: "SLA Daily Energy %", value: fmtPct(totals.slaDailyPct), badge: classifySla(totals.slaDailyPct).label, className: classifySla(totals.slaDailyPct).cls, hint: "Rows with Daily energy = Yes" },
-    { label: "SLA Load Data %", value: fmtPct(totals.slaLoadPct), badge: classifySla(totals.slaLoadPct).label, className: classifySla(totals.slaLoadPct).cls, hint: "Rows with Load Data = Yes" },
+    { label: "Total Consumer Meters", value: totals.meters, hint: "Total consumer meters", badge: "Static" },
+    { label: "Total Meters", value: totals.feeders + totals.dts + totals.meters, hint: "Total meters (Feeders + DTs + Consumer Meters)", badge: "Static" },
+    { label: "Communicating", value: `${fmtPct(totals.communicatingPct)} (${totals.communicating})`, hint: "Communicating meters percentage and count", badge: "Comm" },
+    { label: "Non-Communicating", value: `${fmtPct(totals.nonCommunicatingPct)} (${totals.nonCommunicating})`, hint: "Non-Communicating meters percentage and count", badge: "Non-Comm" },
+    { label: "Unmapped", value: `${fmtPct(totals.unmappedPct)} (${totals.unmapped})`, hint: "Unmapped meters percentage and count", badge: "Unmapped" },
+    { label: "NeverComm", value: `${fmtPct(totals.neverCommPct)} (${totals.neverComm})`, hint: "Never Communicating meters percentage and count", badge: "NeverComm" },
   ];
 
   kpiGrid.innerHTML = tiles.map((t) => `
@@ -333,25 +254,38 @@ function renderPerAssetLossList() {
 }
 
 function computeGlobalTotals() {
-  const regions = state.regions;
-  const feeders = sum(regions.map((r) => r.metrics.feeders ?? 0));
-  const dts = sum(regions.map((r) => r.metrics.dts ?? 0));
-  const meters = sum(regions.map((r) => r.metrics.meters ?? 0));
-  const feederEnergy = sum(regions.map((r) => r.metrics.feederEnergy ?? 0));
-  const dtEnergy = sum(regions.map((r) => r.metrics.dtEnergy ?? 0));
-  const consumerEnergy = sum(regions.map((r) => r.metrics.consumerEnergy ?? 0));
+  const feeders = state.lookups.feederById.size;
+  const dts = state.lookups.dtById.size;
+  const meters = state.lookups.meterById.size;
+
+  const feederEnergy = sum(Array.from(state.lookups.feederById.values()).map(f => f.metrics.feederEnergy || 0));
+  const dtEnergy = sum(Array.from(state.lookups.dtById.values()).map(d => d.metrics.dtEnergy || 0));
+  const consumerEnergy = sum(Array.from(state.lookups.meterById.values()).map(m => m.energy || 0));
 
   const lossFdt = pctLoss(feederEnergy, dtEnergy);
   const lossDtc = pctLoss(dtEnergy, consumerEnergy);
-  const lossFc = pctLoss(feederEnergy, consumerEnergy);
+  const lossFc  = pctLoss(feederEnergy, consumerEnergy);
 
-  // Overall SLA per spec: ratio over all raw records
-  const totalRows = state.slaGlobal.totalRows || 0;
-  const slaDailyPct = totalRows ? Number(((state.slaGlobal.dailyYes / totalRows) * 100).toFixed(2)) : 0;
-  const slaLoadPct = totalRows ? Number(((state.slaGlobal.loadYes / totalRows) * 100).toFixed(2)) : 0;
+  const totalRows = state.slaGlobal.totalRows;
+  const communicatingPct = pct(state.slaGlobal.commYes, totalRows);
+  const nonCommunicatingPct = pct(state.slaGlobal.nonCommYes, totalRows);
+  const unmappedPct = pct(state.slaGlobal.unmappedYes, totalRows);
+  const neverCommPct = pct(state.slaGlobal.neverCommYes, totalRows);
 
-  return { feeders, dts, meters, lossFdt, lossDtc, lossFc, slaDailyPct, slaLoadPct };
+  return {
+    feeders, dts, meters,
+    lossFdt, lossDtc, lossFc,
+    communicating: state.slaGlobal.commYes,
+    communicatingPct,
+    nonCommunicating: state.slaGlobal.nonCommYes,
+    nonCommunicatingPct,
+    unmapped: state.slaGlobal.unmappedYes,
+    unmappedPct,
+    neverComm: state.slaGlobal.neverCommYes,
+    neverCommPct
+  };
 }
+
 
 function renderRegionFilter() {
   const select = document.getElementById("regionFilter");
@@ -364,24 +298,20 @@ function renderRegionFilter() {
 function renderRegionTable() {
   const tbody = document.querySelector("#regionTable tbody");
   const regionFilter = document.getElementById("regionFilter").value;
-  const lossRange = document.getElementById("lossRange").value;
-  const slaRange = document.getElementById("slaRange").value;
+
 
   let regions = state.regions.map((r) => ({
     region: r.name,
     feeders: r.metrics.feeders,
     dts: r.metrics.dts,
     meters: r.metrics.meters,
-    lossFdt: r.metrics.lossFdt,
-    lossDtc: r.metrics.lossDtc,
-    lossFc: r.metrics.lossFc,
-    slaDaily: r.metrics.slaDailyPct,
-    slaLoad: r.metrics.slaLoadPct,
+    comm: r.metrics.communicating,
+    nonComm: r.metrics.nonCommunicating,
+    neverComm: r.metrics.neverComm,
+
   }));
 
   if (regionFilter !== "__ALL__") regions = regions.filter((x) => x.region === regionFilter);
-  if (lossRange !== "__ANY__") regions = regions.filter((x) => classifyLoss(x.lossFc).label.toUpperCase() === lossRange);
-  if (slaRange !== "__ANY__") regions = regions.filter((x) => classifySla(x.slaDaily).label.toUpperCase() === slaRange);
 
   regions.sort((a, b) => {
     const { key, dir } = state.sort;
@@ -395,13 +325,11 @@ function renderRegionTable() {
     <tr>
       <td><button class="link" data-action="open-region" data-region="${escapeHtml(r.region)}">${escapeHtml(r.region)}</button></td>
       <td>${r.feeders}</td>
-      <td>${r.dts}</td>
-      <td>${r.meters}</td>
-      <td>${renderBadgePct(r.lossFdt, classifyLoss)}</td>
-      <td>${renderBadgePct(r.lossDtc, classifyLoss)}</td>
-      <td>${renderBadgePct(r.lossFc, classifyLoss)}</td>
-      <td>${renderBadgePct(r.slaDaily, classifySla)}</td>
-      <td>${renderBadgePct(r.slaLoad, classifySla)}</td>
+              <td>${r.dts}</td>
+        <td>${r.meters}</td>
+        <td>${r.comm}</td>
+        <td>${r.nonComm}</td>
+        <td>${r.neverComm}</td>
     </tr>
   `).join("");
 
@@ -456,7 +384,8 @@ function renderTree() {
                 <div class="node" data-type="meter" data-id="${escapeHtml(m.id)}">
                   <span class="icon">●</span>
                   <span class="label">Meter ${escapeHtml(m.id)}</span>
-                  <span class="meta">${fmtPct(m.sla.daily ? 100 : 0)} daily</span>
+                  <span class="meta">${m.energy ?? 0} kWh</span>
+
                 </div>
               `).join("")}
             </div>
@@ -500,8 +429,7 @@ function renderDetail() {
       ["F→DT Loss%", fmtPct(totals.lossFdt)],
       ["DT→Cons Loss%", fmtPct(totals.lossDtc)],
       ["F→Cons Loss%", fmtPct(totals.lossFc)],
-      ["SLA Daily%", fmtPct(totals.slaDailyPct)],
-      ["SLA Load%", fmtPct(totals.slaLoadPct)],
+     
     ]);
     body.innerHTML = "<div class='pad'>Use the explorer or table to drill down.</div>";
     return;
@@ -519,8 +447,7 @@ function renderDetail() {
       ["F→DT Loss%", fmtPct(m.lossFdt)],
       ["DT→Cons Loss%", fmtPct(m.lossDtc)],
       ["F→Cons Loss%", fmtPct(m.lossFc)],
-      ["SLA Daily%", fmtPct(m.slaDailyPct)],
-      ["SLA Load%", fmtPct(m.slaLoadPct)],
+     
     ]);
     body.innerHTML = renderFeederTable(region.feeders);
     attachFeederRowHandlers();
@@ -538,8 +465,7 @@ function renderDetail() {
       ["F→DT Loss%", fmtPct(m.lossFdt)],
       ["DT→Cons Loss%", fmtPct(m.lossDtc)],
       ["F→Cons Loss%", fmtPct(m.lossFc)],
-      ["SLA Daily%", fmtPct(m.slaDailyPct)],
-      ["SLA Load%", fmtPct(m.slaLoadPct)],
+     
     ]);
     body.innerHTML = renderDtTable(feeder.dts);
     attachDtRowHandlers();
@@ -554,8 +480,7 @@ function renderDetail() {
     metricsWrap.innerHTML = renderMetricGrid([
       ["Meters", m.meters],
       ["DT→Cons Loss%", fmtPct(m.lossDtc)],
-      ["SLA Daily%", fmtPct(m.slaDailyPct)],
-      ["SLA Load%", fmtPct(m.slaLoadPct)],
+      
     ]);
     body.innerHTML = renderMeterTable(dt.meters);
     return;
@@ -565,13 +490,18 @@ function renderDetail() {
     const meter = state.lookups.meterById.get(sel.id);
     if (!meter) return;
     title.textContent = `Meter: ${meter.id}`;
-    metricsWrap.innerHTML = renderMetricGrid([
-      ["Reading Day1", meter.readings.day1 ?? "—"],
-      ["Reading Day2", meter.readings.day2 ?? "—"],
-      ["Energy", meter.energy ?? 0],
-      ["SLA Daily", meter.sla.daily ? "Yes" : "No"],
-      ["SLA Load", meter.sla.load ? "Yes" : "No"],
-    ]);
+         metricsWrap.innerHTML = renderMetricGrid([
+       ["Reading Day1", meter.readings.day1 ?? "—"],
+       ["Reading Day2", meter.readings.day2 ?? "—"],
+       ["Energy", meter.energy ?? 0],
+      
+       ["Comm", meter.comm ? "Yes" : "No"],
+       ["NonComm", meter.nonComm ? "Yes" : "No"],
+       ["Unmapped", meter.unmapped ? "Yes" : "No"],
+       ["NeverComm", meter.neverComm ? "Yes" : "No"],
+       
+
+     ]);
     body.innerHTML = "";
     return;
   }
@@ -740,10 +670,9 @@ function renderAccordionTable() {
       rows.push({
         type: 'feeder', id: feeder.id, parentId: region.name,
         name: feeder.name,
-        code: feeder.id,
-        energy: feederEnergy,
         f2dt: f2dtLoss,
         f2cons: f2consLoss,
+        dt2cons: null, // Not applicable for feeders
       });
 
       for (const dt of feeder.dts) {
@@ -753,8 +682,8 @@ function renderAccordionTable() {
         rows.push({
           type: 'dt', id: dt.id, parentId: feeder.id,
           name: dt.name,
-          code: dt.id,
-          energy: dtEnergy,
+          f2dt: null, // Not applicable for DTs
+          f2cons: null, // Not applicable for DTs
           dt2cons: dt2ConsLoss,
         });
 
@@ -762,9 +691,10 @@ function renderAccordionTable() {
           const consEnergy = meter.energy ?? diffEnergy(meter.readings.day1, meter.readings.day2, 1) ?? 0;
           rows.push({
             type: 'meter', id: meter.id, parentId: dt.id,
-            name: '',
-            code: meter.id,
-            energy: consEnergy,
+            name: meter.id,
+            f2dt: null, // Not applicable for meters
+            f2cons: null, // Not applicable for meters
+            dt2cons: null, // Not applicable for meters
           });
         }
       }
@@ -774,17 +704,16 @@ function renderAccordionTable() {
   // initial render with only feeders visible
   tbody.innerHTML = rows.filter(r => r.type === 'feeder').map(r => rowHtml(r, 0, true)).join('');
 
-  // attach expand handlers
-  tbody.querySelectorAll('[data-type="feeder"]').forEach((tr) => {
-    tr.addEventListener('click', () => toggleExpand(tr, rows));
-  });
-  
-  // Also attach handlers for any DT rows that might be visible initially
-  tbody.querySelectorAll('[data-type="dt"]').forEach((tr) => {
-    tr.addEventListener('click', (e) => {
+  // Use event delegation to handle all row clicks
+  tbody.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr.row-toggle');
+    if (!tr) return;
+    
+    const type = tr.getAttribute('data-type');
+    if (type === 'feeder' || type === 'dt') {
       e.stopPropagation();
       toggleExpand(tr, rows);
-    });
+    }
   });
 }
 
@@ -795,10 +724,9 @@ function rowHtml(r, level, collapsible) {
     return `
       <tr class="row-toggle ${indentCls}" data-type="feeder" data-id="${escapeHtml(r.id)}" data-parent="${escapeHtml(r.parentId)}">
         <td>${icon} ${escapeHtml(r.name)}</td>
-        <td>${escapeHtml(r.code)}</td>
-        <td>${fmtNumOrDash(r.energy)}</td>
         <td>${fmtPctOrDash(r.f2dt)}</td>
         <td>${fmtPctOrDash(r.f2cons)}</td>
+        <td>${fmtPctOrDash(r.dt2cons)}</td>
       </tr>
     `;
   }
@@ -806,9 +734,8 @@ function rowHtml(r, level, collapsible) {
     return `
       <tr class="row-toggle ${indentCls}" data-type="dt" data-id="${escapeHtml(r.id)}" data-parent="${escapeHtml(r.parentId)}">
         <td>${icon} ${escapeHtml(r.name)}</td>
-        <td>${escapeHtml(r.code)}</td>
-        <td>${fmtNumOrDash(r.energy)}</td>
-        <td></td>
+        <td>${fmtPctOrDash(r.f2dt)}</td>
+        <td>${fmtPctOrDash(r.f2cons)}</td>
         <td>${fmtPctOrDash(r.dt2cons)}</td>
       </tr>
     `;
@@ -816,11 +743,10 @@ function rowHtml(r, level, collapsible) {
   // meter
   return `
     <tr class="row-toggle ${indentCls}" data-type="meter" data-id="${escapeHtml(r.id)}" data-parent="${escapeHtml(r.parentId)}">
-      <td>${icon} Meter</td>
-      <td>${escapeHtml(r.code)}</td>
-      <td>${fmtNumOrDash(r.energy)} kWh</td>
-      <td></td>
-      <td></td>
+      <td>${icon} ${escapeHtml(r.name)}</td>
+      <td>${fmtPctOrDash(r.f2dt)}</td>
+      <td>${fmtPctOrDash(r.f2cons)}</td>
+      <td>${fmtPctOrDash(r.dt2cons)}</td>
     </tr>
   `;
 }
@@ -859,29 +785,7 @@ function toggleExpand(tr, rows) {
   tr.classList.add('open');
   iconEl.textContent = '▾';
 
-  // attach next-level handlers
-  if (type === 'feeder') {
-    let sibling = tr.nextElementSibling;
-    while (sibling && sibling.getAttribute('data-parent') === id) {
-      if (sibling.getAttribute('data-type') === 'dt') {
-        sibling.addEventListener('click', (e) => {
-          e.stopPropagation();
-          toggleExpand(sibling, rows);
-        });
-      }
-      sibling = sibling.nextElementSibling;
-    }
-  } else if (type === 'dt') {
-    // For DT rows, attach handlers to meter rows that get expanded
-    let sibling = tr.nextElementSibling;
-    while (sibling && sibling.getAttribute('data-parent') === id) {
-      if (sibling.getAttribute('data-type') === 'meter') {
-        // Meter rows don't need click handlers since they don't expand
-        sibling.style.cursor = 'default';
-      }
-      sibling = sibling.nextElementSibling;
-    }
-  }
+  // No need to attach individual handlers since we use event delegation
 }
 
 // Render helpers
@@ -911,8 +815,7 @@ function renderFeederTable(feeders) {
           <th>F→DT Loss%</th>
           <th>DT→Cons Loss%</th>
           <th>F→Cons Loss%</th>
-          <th>SLA Daily%</th>
-          <th>SLA Load%</th>
+          
         </tr>
       </thead>
       <tbody>
@@ -924,8 +827,7 @@ function renderFeederTable(feeders) {
             <td>${renderBadgePct(f.metrics.lossFdt, classifyLoss)}</td>
             <td>${renderBadgePct(f.metrics.lossDtc, classifyLoss)}</td>
             <td>${renderBadgePct(f.metrics.lossFc, classifyLoss)}</td>
-            <td>${renderBadgePct(f.metrics.slaDailyPct, classifySla)}</td>
-            <td>${renderBadgePct(f.metrics.slaLoadPct, classifySla)}</td>
+            
           </tr>
         `).join("")}
       </tbody>
@@ -952,8 +854,7 @@ function renderDtTable(dts) {
           <th>DT</th>
           <th>Meters</th>
           <th>DT→Cons Loss%</th>
-          <th>SLA Daily%</th>
-          <th>SLA Load%</th>
+          
         </tr>
       </thead>
       <tbody>
@@ -962,8 +863,7 @@ function renderDtTable(dts) {
             <td><button class="link" data-action="open-dt" data-id="${escapeHtml(d.id)}">${escapeHtml(d.name)}</button></td>
             <td>${d.meters.length}</td>
             <td>${renderBadgePct(d.metrics.lossDtc, classifyLoss)}</td>
-            <td>${renderBadgePct(d.metrics.slaDailyPct, classifySla)}</td>
-            <td>${renderBadgePct(d.metrics.slaLoadPct, classifySla)}</td>
+           
           </tr>
         `).join("")}
       </tbody>
@@ -991,8 +891,7 @@ function renderMeterTable(meters) {
           <th>Day1</th>
           <th>Day2</th>
           <th>Energy</th>
-          <th>SLA Daily</th>
-          <th>SLA Load</th>
+         
         </tr>
       </thead>
       <tbody>
@@ -1002,9 +901,7 @@ function renderMeterTable(meters) {
             <td>${m.readings.day1 ?? "—"}</td>
             <td>${m.readings.day2 ?? "—"}</td>
             <td>${m.energy ?? 0}</td>
-            <td>${m.sla.daily ? '<span class="cell-badge badge-green">Yes</span>' : '<span class="cell-badge badge-red">No</span>'}</td>
-            <td>${m.sla.load ? '<span class="cell-badge badge-green">Yes</span>' : '<span class="cell-badge badge-red">No</span>'}</td>
-          </tr>
+                     </tr>
         `).join("")}
       </tbody>
     </table>
@@ -1082,14 +979,33 @@ function bootstrapWithMockData() {
           const day2 = day1 + Math.floor(Math.random() * 20);
           const feederEnergy = 100 + Math.random() * 50; // synthetic
           const dtEnergy = 80 + Math.random() * 40; // synthetic
-          rows.push({ Region: region, FeederId: feederId, FeederName: feederName, DTId: dtId, DTName: dtName, MeterId: meterId, Day1: day1, Day2: day2, FeederEnergy: feederEnergy, DTEnergy: dtEnergy });
+                     rows.push({ 
+             Region: region, 
+             FeederId: feederId, 
+             FeederName: feederName, 
+             DTId: dtId, 
+             DTName: dtName, 
+             MeterId: meterId, 
+             Day1: day1, 
+             Day2: day2, 
+             FeederEnergy: feederEnergy, 
+             DTEnergy: dtEnergy,
+             "Daily energy": Math.random() > 0.3 ? "Yes" : "No",
+             "Load Data": Math.random() > 0.4 ? "Yes" : "No",
+             "Comm": Math.random() > 0.6 ? "Yes" : "No",
+             "NonComm": Math.random() > 0.7 ? "Yes" : "No",
+             "Unmapped": Math.random() > 0.9 ? "Yes" : "No",
+             "NeverComm": Math.random() > 0.8 ? "Yes" : "No"
+           });
         }
       }
     }
   }
   document.getElementById("fileName").textContent = "Mock Data";
   document.getElementById("processedTime").textContent = new Date().toLocaleString();
-  buildModelFromRows(rows);
+  buildModelFromThreeSheets(mockFeeders, mockDts, mockMeters);
+renderAll();
+
   renderAll();
 }
 
